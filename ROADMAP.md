@@ -1,7 +1,12 @@
 # Evidence report improvements
 
 Reviewed 13 November 2026. The existing four tests passed, including the Streamlit
-save-review/export workflow. Everything below is proposed, not implemented.
+save-review/export workflow. The original proposals below are retained as the review baseline.
+
+Delivered update: queue filters/counts, evidence selection, full-frame overlays,
+finding-bound decision state, stronger import validation and one-pass review-file
+indexing. Seven local tests pass. Thumbnails, keyboard navigation, reviewer filters,
+database indexing and optional PDF output remain future work.
 
 ## Highest-value next updates
 

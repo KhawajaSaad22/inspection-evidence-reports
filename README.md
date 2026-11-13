@@ -2,6 +2,12 @@
 
 See [ROADMAP.md](ROADMAP.md) for proposed review-queue, validation and reporting improvements.
 
+Review update: filter All / Unreviewed / Conflicting / Stale findings, browse retained
+evidence images and enable a score overlay for dimension-matched full frames.
+Decisions default to Needs review independently for each finding and evidence binding.
+Review indexing reads the audit files once per queue/export, while still verifying
+content bindings. Malformed frame scores and review fields produce clear errors.
+
 Review suspicious drone frames, retain human decisions and export self-contained
 HTML reports with evidence images, heatmaps and model provenance. Linux containers
 and native Python are supported. No trained model or real inspection data is bundled.

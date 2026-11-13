@@ -28,14 +28,24 @@ def asset(root,relative):
 
 def load_run(root):
     root=Path(root).resolve(); metadata=json.loads((root/'run.json').read_text(encoding='utf-8'))
+    if not isinstance(metadata,dict): raise ValueError('Run metadata must be an object')
+    if metadata.get('status') not in (None,'running','completed','incomplete','failed'):
+        raise ValueError('Invalid run status')
     rows=[]; seen=set()
     for line in (root/'frames.jsonl').read_text(encoding='utf-8').splitlines():
         if not line.strip(): continue
         row=json.loads(line)
+        if not isinstance(row,dict):raise ValueError('Frame records must be objects')
         if type(row.get('frame')) is not int or row['frame']<0 or row['frame'] in seen:
             raise ValueError('Frame IDs must be unique nonnegative integers')
         if not isinstance(row.get('timestamp_s'),(int,float)) or not math.isfinite(row['timestamp_s']) or row['timestamp_s']<0:
             raise ValueError('Invalid frame timestamp')
+        if type(row.get('suspicious')) is not bool:raise ValueError('Each frame needs a boolean suspicious flag')
+        score=row.get('max_score')
+        if not isinstance(score,(int,float)) or not math.isfinite(score) or not 0<=score<=1:
+            raise ValueError('Frame scores must be finite and in [0, 1]')
+        if not isinstance(row.get('heatmap'),str) or not isinstance(row.get('evidence',[]),list) or any(not isinstance(p,str) for p in row.get('evidence',[])):
+            raise ValueError('Invalid heatmap/evidence paths')
         seen.add(row['frame']); rows.append(row)
     if not rows: raise ValueError('No frame records')
     return root,metadata,rows
@@ -52,13 +62,17 @@ def heatmap(root,row):
             source.seek(offset); payload=source.read(4096)
         if len(payload)!=4096: raise ValueError('Truncated packed heatmap')
         grid=np.frombuffer(payload,dtype=np.uint8).reshape(64,64)
+    if not isinstance(grid,np.ndarray):
+        if hasattr(grid,'close'):grid.close()
+        raise ValueError('Expected a uint8 64x64 heatmap, not an archive')
     if grid.shape!=(64,64) or grid.dtype!=np.uint8: raise ValueError('Expected a uint8 64x64 heatmap')
     return grid
 
 
-def binding(root,row):
+def binding(root,row,context=None):
     """A changed run, manifest or evidence invalidates an earlier review."""
-    identity={'run':digest(Path(root)/'run.json'),'manifest':digest(Path(root)/'frames.jsonl'),
+    context=context or {'run':digest(Path(root)/'run.json'),'manifest':digest(Path(root)/'frames.jsonl')}
+    identity={**context,
               'frame':row['frame'],'grid':hashlib.sha256(heatmap(root,row).tobytes()).hexdigest(),
               'evidence':[(path,digest(asset(root,path))) for path in row.get('evidence',[])]}
     return hashlib.sha256(json.dumps(identity,sort_keys=True).encode()).hexdigest()
@@ -78,14 +92,47 @@ def save_review(root,row,decision,reviewer,notes='',directory=None):
 
 
 def reviews_for(root,row,directory=None):
+    result=index_reviews(root,[row],directory)[row['frame']]
+    return result['valid'],result['stale']
+
+
+def index_reviews(root,rows,directory=None):
+    """Read audit files once per queue/export; never cache bindings across renders."""
     directory=Path(directory) if directory else Path(root)/'reviews'
-    current=binding(root,row); valid=[]; stale=[]
+    context={'run':digest(Path(root)/'run.json'),'manifest':digest(Path(root)/'frames.jsonl')}
+    groups={}
     for path in sorted(directory.glob('*.json')):
         record=json.loads(path.read_text(encoding='utf-8'))
-        if record.get('frame')==row['frame']:
-            if record.get('binding')==current and record.get('decision') in DECISIONS: valid.append(record)
-            else: stale.append(record)
-    return valid,stale
+        if not isinstance(record,dict):raise ValueError(f'Invalid review object: {path.name}')
+        if type(record.get('frame')) is not int or not isinstance(record.get('notes',''),str):
+            raise ValueError(f'Invalid review fields: {path.name}')
+        groups.setdefault(record.get('frame'),[]).append(record)
+    result={}
+    for row in rows:
+        current=binding(root,row,context);valid=[];stale=[]
+        for record in groups.get(row['frame'],[]):
+            if record.get('binding')==current and record.get('decision') in DECISIONS and isinstance(record.get('reviewer'),str):valid.append(record)
+            else:stale.append(record)
+        result[row['frame']]={'valid':valid,'stale':stale,'binding':current,
+                             'conflicting':len({r['decision'] for r in valid})>1}
+    return result
+
+
+def filter_findings(rows,index,mode='All'):
+    return [row for row in rows if row.get('suspicious') and
+        (mode=='All' or mode=='Unreviewed' and not index[row['frame']]['valid'] or
+         mode=='Conflicting' and index[row['frame']]['conflicting'] or
+         mode=='Stale' and bool(index[row['frame']]['stale']))]
+
+
+def overlay_image(root,row,relative,opacity=.35):
+    with Image.open(asset(root,relative)) as image: original=image.convert('RGB')
+    if row.get('shape')!=[original.height,original.width]:
+        raise ValueError('Overlay needs a full-frame image with matching recorded dimensions')
+    grid=heatmap(root,row)
+    score=np.asarray(Image.fromarray(grid).resize(original.size,Image.Resampling.NEAREST))/255
+    pixels=np.asarray(original,dtype=np.float32);alpha=score[:,:,None]*opacity
+    return Image.fromarray(np.uint8(pixels*(1-alpha)+np.array([255,50,0])*alpha))
 
 
 def grid_image(grid):
@@ -104,9 +151,11 @@ def export_html(root,output,directory=None):
     if output.exists(): raise ValueError('Choose a new report path')
     esc=lambda value:html.escape(str(value),quote=True)
     sections=[]
+    findings=[row for row in rows if row.get('suspicious')]
+    index=index_reviews(root,findings,directory)
     for row in rows:
         if not row.get('suspicious'): continue
-        reviews,stale=reviews_for(root,row,directory)
+        reviews,stale=index[row['frame']]['valid'],index[row['frame']]['stale']
         pictures=[f'<img alt="Defect-score heatmap" src="{embedded(grid_image(heatmap(root,row)))}">']
         for relative in row.get('evidence',[]):
             with Image.open(asset(root,relative)) as image: url=embedded(image)
@@ -126,6 +175,9 @@ Frame manifest SHA-256: <code>{digest(root/'frames.jsonl')}</code></p>
 <details><summary>Model provenance</summary><pre>{esc(json.dumps(metadata.get('model'),indent=2))}</pre></details>
 {''.join(sections) or '<p>No suspicious frames.</p>'}</html>"""
     output.parent.mkdir(parents=True,exist_ok=True)
+    # Do not attach an earlier decision to evidence changed during rendering.
+    if any(binding(root,row)!=index[row['frame']]['binding'] for row in findings):
+        raise ValueError('Run evidence changed during export; reload and try again')
     with output.open('x',encoding='utf-8') as stream: stream.write(text)
     return output
 
@@ -146,7 +198,7 @@ def make_demo(root):
         evidence=[]
         if i:
             path=f'evidence/{i}.png'; image.save(root/path); evidence.append(path)
-        rows.append(dict(frame=i,timestamp_s=float(i),max_score=float(grid.max()/255),suspicious=bool(i),
+        rows.append(dict(frame=i,timestamp_s=float(i),shape=[400,640],max_score=float(grid.max()/255),suspicious=bool(i),
                          heatmap=relative,evidence=evidence))
     (root/'frames.jsonl').write_text('\n'.join(json.dumps(row) for row in rows)+'\n',encoding='utf-8')
 

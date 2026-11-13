@@ -3,10 +3,29 @@ from pathlib import Path
 import tempfile
 import unittest
 import numpy as np
-from reports import make_demo,load_run,heatmap,save_review,reviews_for,export_html,asset
+from reports import make_demo,load_run,heatmap,save_review,reviews_for,export_html,asset,index_reviews,filter_findings,overlay_image
 
 
 class ReportTests(unittest.TestCase):
+    def test_queue_filters_and_overlay_geometry(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder)/'run';make_demo(root);_,_,rows=load_run(root)
+            save_review(root,rows[1],'confirmed','A')
+            save_review(root,rows[1],'false_alert','B')
+            index=index_reviews(root,rows)
+            self.assertEqual([r['frame'] for r in filter_findings(rows,index,'Conflicting')],[1])
+            self.assertEqual([r['frame'] for r in filter_findings(rows,index,'Unreviewed')],[2])
+            overlay=overlay_image(root,rows[1],rows[1]['evidence'][0])
+            self.assertEqual(overlay.size,(640,400))
+            with self.assertRaisesRegex(ValueError,'full-frame'):
+                overlay_image(root,{**rows[1],'shape':[10,10]},rows[1]['evidence'][0])
+
+    def test_invalid_manifest_score_reports_a_clear_error(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder)/'run';make_demo(root);_,_,rows=load_run(root)
+            rows[0]['max_score']=1.1
+            (root/'frames.jsonl').write_text('\n'.join(json.dumps(row) for row in rows))
+            with self.assertRaisesRegex(ValueError,'scores'):load_run(root)
     def test_review_binding_and_escaped_portable_export(self):
         with tempfile.TemporaryDirectory() as folder:
             root=Path(folder)/'run'; make_demo(root); _,_,rows=load_run(root); row=rows[1]

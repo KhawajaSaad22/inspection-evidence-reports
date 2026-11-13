@@ -1,5 +1,11 @@
 # Initial validation — 12 November 2026
 
+## Review update — 13 November 2026
+
+Seven tests pass locally, covering queue filters/conflicts, score validation,
+overlay geometry, finding-bound decisions, export and stale bindings. Streamlit
+interaction tests run with local socket access. The historical checks follow.
+
 Four automated checks passed locally and in a Python 3.11 Linux container:
 
 - Streamlit review selection, save-review and HTML export workflow.
