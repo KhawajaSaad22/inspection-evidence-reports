@@ -1,5 +1,7 @@
 # Inspection evidence reports
 
+See [ROADMAP.md](ROADMAP.md) for proposed review-queue, validation and reporting improvements.
+
 Review suspicious drone frames, retain human decisions and export self-contained
 HTML reports with evidence images, heatmaps and model provenance. Linux containers
 and native Python are supported. No trained model or real inspection data is bundled.
